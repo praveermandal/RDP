@@ -1,0 +1,62 @@
+name: 24/7_RDP_Ultimate
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Tailscale
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile tailscale-setup.exe
+          Start-Process -FilePath .\tailscale-setup.exe -ArgumentList "/quiet", "/norestart" -Wait
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey ${{ secrets.TS_AUTHKEY }} --hostname cloud-pc
+
+      - name: Configure Windows & RDP
+        shell: powershell
+        run: |
+          $Password = ConvertTo-SecureString "GithubRDP123!" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $Password
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+      - name: Notify Telegram
+        shell: powershell
+        run: |
+          try {
+            Start-Sleep -Seconds 10
+            $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+            $msg = "✅ RDP ONLINE`n`nPC Name: cloud-pc.tailc06f04.ts.net`nUser: runneradmin`nPass: GithubRDP123!"
+            $payload = @{ chat_id = "${{ secrets.TELEGRAM_TO }}"; text = $msg } | ConvertTo-Json
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+            Invoke-RestMethod -Uri "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" -Method Post -ContentType "application/json; charset=utf-8" -Body $bytes -ErrorAction SilentlyContinue
+          } catch { Write-Host "Telegram failed, continuing..." }
+
+      - name: Keep Alive Loop
+        shell: powershell
+        run: |
+          Write-Host "RDP Active. Session ends in 5.8 hours."
+          Start-Sleep -Seconds 21000
+
+      - name: Check for Kill Switch and Trigger Loop
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "STOP" ]; then
+            echo "STOP file detected. Ending loop."
+          else
+            echo "No STOP file. Triggering next session..."
+            gh workflow run "24/7_RDP_Ultimate"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
