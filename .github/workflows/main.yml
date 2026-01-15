@@ -1,4 +1,4 @@
-name: 24x7_Turbo_RDP_Master_V11
+name: 24x7_Turbo_RDP_Master_V12
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
       - name: Cleanup History
         shell: bash
         run: |
-          gh run list --workflow 24x7_Turbo_RDP_Master_V11 --status completed --limit 50 | cut -f7 | xargs -I{} gh run delete {} || true
+          gh run list --workflow 24x7_Turbo_RDP_Master_V12 --status completed --limit 50 | cut -f7 | xargs -I{} gh run delete {} || true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -35,7 +35,6 @@ jobs:
           if (-not $count) { $count = "1" }
           $prevCount = [int]$count - 1
           
-          # Delete previous session machine using safe env variables
           if ($prevCount -gt 0 -and $env:TS_API_KEY -and $env:TS_TAILNET) {
               $authHeader = @{ Authorization = "Basic $( [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($env:TS_API_KEY):")) )" }
               $url = "https://api.tailscale.com/api/v2/tailnet/$($env:TS_TAILNET)/devices"
@@ -56,7 +55,6 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          Write-Host "Searching for Tailscale IP..."
           for ($i=1; $i -le 12; $i++) {
               $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
               $FoundIP = $status.Self.TailscaleIPs[0]
@@ -74,14 +72,17 @@ jobs:
           TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
         run: |
           $count = "${{ github.event.inputs.session_count }}"
-          $ip = "${{ env.FINAL_IP }}"
-          if (-not $ip) { $ip = "IP_NOT_FOUND" }
+          $ip = if ($env:FINAL_IP) { $env:FINAL_IP } else { "N/A" }
           
-          # We use the $env: variables here to avoid the "Terminator" error
-          $msg = "🚀 *RDP ONLINE (Session #$count)*`n`n*Hostname:* `cloud-pc-$count` `n*IP:* ``$ip`` `n*User:* `runneradmin` `n*Pass:* `GithubRDP123!`"
-          $payload = @{ chat_id = "$env:TELEGRAM_TO"; text = $msg; parse_mode = "Markdown" } | ConvertTo-Json
-          $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
-          Invoke-RestMethod -Uri "https://api.telegram.org/bot$($env:TELEGRAM_TOKEN)/sendMessage" -Method Post -ContentType "application/json" -Body $bytes
+          # Simplified Payload to prevent Parser Errors
+          $body = @{
+              chat_id = "$env:TELEGRAM_TO"
+              text = "🚀 *RDP ONLINE (Session #$count)*`n`n*Hostname:* cloud-pc-$count`n*IP:* $ip`n*User:* runneradmin`n*Pass:* GithubRDP123!"
+              parse_mode = "Markdown"
+          }
+          
+          # Direct call without complex Byte encoding
+          Invoke-RestMethod -Uri "https://api.telegram.org/bot$($env:TELEGRAM_TOKEN)/sendMessage" -Method Post -Body $body
 
       - name: Keep-Alive
         shell: powershell
@@ -92,11 +93,10 @@ jobs:
         shell: bash
         run: |
           if [ -f "STOP" ]; then
-            MSG="🛑 *LOOP TERMINATED*"
-            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" -d "chat_id=${{ secrets.TELEGRAM_TO }}&text=$MSG"
+            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" -d "chat_id=${{ secrets.TELEGRAM_TO }}&text=🛑 LOOP TERMINATED"
           else
             NEW_COUNT=$(( ${{ github.event.inputs.session_count }} + 1 ))
-            gh workflow run 24x7_Turbo_RDP_Master_V11 -f session_count=$NEW_COUNT
+            gh workflow run 24x7_Turbo_RDP_Master_V12 -f session_count=$NEW_COUNT
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
