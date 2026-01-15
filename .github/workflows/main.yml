@@ -1,0 +1,100 @@
+name: 24x7_Turbo_RDP_Master_V7
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_count:
+        default: '1'
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup History
+        shell: bash
+        run: |
+          echo "Cleaning up old workflow history..."
+          # Deletes logs of previous runs to keep the Actions tab clean
+          gh run deletion-log --workflow 24x7_Turbo_RDP_Master_V7 || true
+          gh run list --workflow 24x7_Turbo_RDP_Master_V7 --status completed --limit 50 | cut -f7 | xargs -I{} gh run delete {} || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Tailscale & Dashboard Cleanup
+        shell: powershell
+        run: |
+          $count = "${{ github.event.inputs.session_count }}"
+          if (-not $count) { $count = "1" }
+          $prevCount = [int]$count - 1
+          
+          # Delete the previous session's machine from Tailscale to prevent clutter
+          if ($prevCount -gt 0) {
+              $authHeader = @{ Authorization = "Basic $( [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${{ secrets.TS_API_KEY }}:")) )" }
+              $url = "https://api.tailscale.com/api/v2/tailnet/${{ secrets.TS_TAILNET }}/devices"
+              $devices = Invoke-RestMethod -Uri $url -Headers $authHeader
+              $oldDevice = $devices.devices | Where-Object { $_.hostname -eq "cloud-pc-$prevCount" }
+              if ($oldDevice) { 
+                  Invoke-RestMethod -Uri "https://api.tailscale.com/api/v2/device/$($oldDevice.id)" -Method Delete -Headers $authHeader 
+              }
+          }
+
+          # Install and login to Tailscale
+          Invoke-WebRequest -Uri https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile tailscale-setup.exe
+          Start-Process -FilePath .\tailscale-setup.exe -ArgumentList "/quiet", "/norestart" -Wait
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey ${{ secrets.TS_AUTHKEY }} --hostname "cloud-pc-$count" --force-reauth
+
+      - name: Windows Speed Optimization
+        shell: powershell
+        run: |
+          # Disable animations/visuals for maximum RDP performance
+          $path = "HKCU:\Control Panel\Desktop"
+          Set-ItemProperty -Path $path -Name "UserPreferencesMask" -Value ([byte[]](0x90,0x12,0x03,0x80,0x10,0x00,0x00,0x00))
+          Set-ItemProperty -Path $path -Name "VisualFXSetting" -Value 2
+          powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+
+      - name: Configure RDP & User
+        shell: powershell
+        run: |
+          $Password = ConvertTo-SecureString "GithubRDP123!" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $Password
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+      - name: Send Telegram Notification
+        shell: powershell
+        run: |
+          $count = "${{ github.event.inputs.session_count }}"
+          $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          $msg = "🚀 *RDP ONLINE (Session #$count)*`n`n*Hostname:* `cloud-pc-$count` `n*IP:* `$tsIP` `n*User:* `runneradmin` `n*Pass:* `GithubRDP123!` `n`nHistory & Dashboard Cleaned! ✨"
+          $payload = @{ chat_id = "${{ secrets.TELEGRAM_TO }}"; text = $msg; parse_mode = "Markdown" } | ConvertTo-Json
+          Invoke-RestMethod -Uri "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" -Method Post -ContentType "application/json" -Body ([System.Text.Encoding]::UTF8.GetBytes($payload))
+
+      - name: Keep-Alive Loop
+        shell: powershell
+        run: |
+          Write-Host "RDP Active. Running for 5.5 hours..."
+          Start-Sleep -Seconds 20000
+
+      - name: CHECK KILL SWITCH & TRIGGER NEXT
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "STOP" ]; then
+            MSG="🛑 *LOOP TERMINATED*`n`nSTOP file detected. The 24/7 streak has ended at Session #${{ github.event.inputs.session_count }}."
+            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+              -d "chat_id=${{ secrets.TELEGRAM_TO }}&text=$MSG&parse_mode=Markdown"
+          else
+            NEW_COUNT=$(( ${{ github.event.inputs.session_count }} + 1 ))
+            echo "Starting Session #$NEW_COUNT..."
+            gh workflow run 24x7_Turbo_RDP_Master_V7 -f session_count=$NEW_COUNT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
