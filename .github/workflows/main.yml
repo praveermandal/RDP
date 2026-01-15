@@ -1,4 +1,4 @@
-name: 24x7_Turbo_RDP_Master_V12
+name: 24x7_Turbo_RDP_Master_V13
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
       - name: Cleanup History
         shell: bash
         run: |
-          gh run list --workflow 24x7_Turbo_RDP_Master_V12 --status completed --limit 50 | cut -f7 | xargs -I{} gh run delete {} || true
+          gh run list --workflow 24x7_Turbo_RDP_Master_V13 --status completed --limit 50 | cut -f7 | xargs -I{} gh run delete {} || true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -65,38 +65,40 @@ jobs:
               Start-Sleep -Seconds 5
           }
 
-      - name: Send Notification
-        shell: powershell
+      - name: Send Notification (Bash)
+        shell: bash
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
+          SESSION_COUNT: ${{ github.event.inputs.session_count }}
+          IP: ${{ env.FINAL_IP }}
         run: |
-          $count = "${{ github.event.inputs.session_count }}"
-          $ip = if ($env:FINAL_IP) { $env:FINAL_IP } else { "N/A" }
+          # Construct message safely in Bash
+          MSG="🚀 *RDP ONLINE (Session #$SESSION_COUNT)*%0A%0A*Hostname:* cloud-pc-$SESSION_COUNT%0A*IP:* ${IP:-N/A}%0A*User:* runneradmin%0A*Pass:* GithubRDP123!"
           
-          # Simplified Payload to prevent Parser Errors
-          $body = @{
-              chat_id = "$env:TELEGRAM_TO"
-              text = "🚀 *RDP ONLINE (Session #$count)*`n`n*Hostname:* cloud-pc-$count`n*IP:* $ip`n*User:* runneradmin`n*Pass:* GithubRDP123!"
-              parse_mode = "Markdown"
-          }
-          
-          # Direct call without complex Byte encoding
-          Invoke-RestMethod -Uri "https://api.telegram.org/bot$($env:TELEGRAM_TOKEN)/sendMessage" -Method Post -Body $body
+          # Use curl - Bash doesn't care about the *** masking syntax
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
+            -d "chat_id=$TELEGRAM_TO" \
+            -d "text=$MSG" \
+            -d "parse_mode=Markdown"
 
       - name: Keep-Alive
         shell: powershell
         run: Start-Sleep -Seconds 20000
 
-      - name: TRIGGER NEXT CYCLE
+      - name: TRIGGER NEXT CYCLE (Bash)
         if: always()
         shell: bash
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -f "STOP" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" -d "chat_id=${{ secrets.TELEGRAM_TO }}&text=🛑 LOOP TERMINATED"
+            curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
+              -d "chat_id=$TELEGRAM_TO" \
+              -d "text=🛑 LOOP TERMINATED"
           else
             NEW_COUNT=$(( ${{ github.event.inputs.session_count }} + 1 ))
-            gh workflow run 24x7_Turbo_RDP_Master_V12 -f session_count=$NEW_COUNT
+            gh workflow run 24x7_Turbo_RDP_Master_V13 -f session_count=$NEW_COUNT
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
