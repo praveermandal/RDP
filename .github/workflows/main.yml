@@ -1,0 +1,132 @@
+name: RDP-247
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_count:
+        default: '1'
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  # --- ALPHA MACHINE ---
+  Alpha_Node:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Tailscale & Dashboard Cleanup
+        shell: powershell
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+          TS_API_KEY: ${{ secrets.TS_API_KEY }}
+          TS_TAILNET: ${{ secrets.TS_TAILNET }}
+        run: |
+          $count = "${{ github.event.inputs.session_count }}"
+          $prev = [int]$count - 1
+          # Delete previous Alpha from Tailscale Dashboard if it exists
+          if ($prev -gt 0 -and $env:TS_API_KEY) {
+              $auth = "Basic $( [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($env:TS_API_KEY):")) )"
+              $url = "https://api.tailscale.com/api/v2/tailnet/$($env:TS_TAILNET)/devices"
+              $devices = Invoke-RestMethod -Uri $url -Headers @{Authorization=$auth}
+              $old = $devices.devices | Where-Object { $_.hostname -eq "RDP-Alpha-$prev" }
+              if ($old) { Invoke-RestMethod -Uri "https://api.tailscale.com/api/v2/device/$($old.id)" -Method Delete -Headers @{Authorization=$auth} }
+          }
+          Invoke-WebRequest -Uri https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile ts.exe
+          Start-Process -FilePath .\ts.exe -ArgumentList "/quiet", "/norestart" -Wait
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey "$env:TS_AUTHKEY" --hostname "RDP-Alpha-$count" --force-reauth
+
+      - name: Configure RDP
+        shell: powershell
+        run: |
+          $Password = ConvertTo-SecureString "GithubRDP123!" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $Password
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          for ($i=1; $i -le 10; $i++) {
+              $ip = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4)
+              if ($ip) { echo "FINAL_IP=$ip" >> $env:GITHUB_ENV; break }
+              Start-Sleep -Seconds 5
+          }
+
+      - name: Notify & Live Cleanup
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
+        run: |
+          # 1. Delete completed runs IMMEDIATELY as we start
+          gh run list --workflow RDP-247 --status completed --limit 50 --json databaseId -q '.[].databaseId' | xargs -I{} gh run delete {} || true
+          # 2. Notify
+          MSG="RDP ONLINE | REPO: RDP | JOB: ALPHA | S#: ${{ github.event.inputs.session_count }} | IP: ${{ env.FINAL_IP }}"
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" -d "chat_id=$TELEGRAM_TO" -d "text=$MSG"
+          # 3. Wait
+          powershell.exe "Start-Sleep -Seconds 20000"
+
+  # --- BRAVO MACHINE ---
+  Bravo_Node:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Tailscale & Dashboard Cleanup
+        shell: powershell
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+          TS_API_KEY: ${{ secrets.TS_API_KEY }}
+          TS_TAILNET: ${{ secrets.TS_TAILNET }}
+        run: |
+          $count = "${{ github.event.inputs.session_count }}"
+          $prev = [int]$count - 1
+          if ($prev -gt 0 -and $env:TS_API_KEY) {
+              $auth = "Basic $( [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($env:TS_API_KEY):")) )"
+              $url = "https://api.tailscale.com/api/v2/tailnet/$($env:TS_TAILNET)/devices"
+              $devices = Invoke-RestMethod -Uri $url -Headers @{Authorization=$auth}
+              $old = $devices.devices | Where-Object { $_.hostname -eq "RDP-Bravo-$prev" }
+              if ($old) { Invoke-RestMethod -Uri "https://api.tailscale.com/api/v2/device/$($old.id)" -Method Delete -Headers @{Authorization=$auth} }
+          }
+          Invoke-WebRequest -Uri https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile ts.exe
+          Start-Process -FilePath .\ts.exe -ArgumentList "/quiet", "/norestart" -Wait
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey "$env:TS_AUTHKEY" --hostname "RDP-Bravo-$count" --force-reauth
+
+      - name: Configure RDP
+        shell: powershell
+        run: |
+          $Password = ConvertTo-SecureString "GithubRDP123!" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $Password
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          for ($i=1; $i -le 10; $i++) {
+              $ip = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4)
+              if ($ip) { echo "FINAL_IP=$ip" >> $env:GITHUB_ENV; break }
+              Start-Sleep -Seconds 5
+          }
+
+      - name: Notify Bravo
+        shell: bash
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
+        run: |
+          MSG="RDP ONLINE | REPO: RDP | JOB: BRAVO | S#: ${{ github.event.inputs.session_count }} | IP: ${{ env.FINAL_IP }}"
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" -d "chat_id=$TELEGRAM_TO" -d "text=$MSG"
+          powershell.exe "Start-Sleep -Seconds 20000"
+
+  # --- TRIGGER NEXT ---
+  Trigger:
+    needs: [Alpha_Node, Bravo_Node]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Loop Logic
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEXT=$(( ${{ github.event.inputs.session_count }} + 1 ))
+          [ ! -f "STOP" ] && gh workflow run RDP-247 -f session_count=$NEXT
