@@ -1,0 +1,122 @@
+name: RDP-247
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_count:
+        default: '1'
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  # --- ALPHA MACHINE ---
+  Alpha_Node:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Tailscale
+        shell: powershell
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          Invoke-WebRequest -Uri https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile ts.exe
+          Start-Process -FilePath .\ts.exe -ArgumentList "/quiet", "/norestart" -Wait
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey "$env:TS_AUTHKEY" --hostname "RDP-Alpha-${{ github.event.inputs.session_count }}" --force-reauth
+
+      - name: System Health & RDP Config
+        shell: powershell
+        run: |
+          $Password = ConvertTo-SecureString "GithubRDP123!" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $Password
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          $disk = Get-PSDrive C | Select-Object Used, Free
+          $freeGB = [math]::Round($disk.Free / 1GB, 2)
+          echo "FREE_SPACE=$freeGB" >> $env:GITHUB_ENV
+          for ($i=1; $i -le 10; $i++) {
+              $ip = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4)
+              if ($ip) { echo "FINAL_IP=$ip" >> $env:GITHUB_ENV; break }
+              Start-Sleep -Seconds 5
+          }
+
+      - name: Notify Alpha
+        shell: bash
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
+          COUNT: ${{ github.event.inputs.session_count }}
+        run: |
+          IP="${{ env.FINAL_IP }}"
+          DISK="${{ env.FREE_SPACE }}"
+          MSG="RDP ONLINE | REPO: RDP | JOB: ALPHA | S#: $COUNT | IP: $IP | Disk: ${DISK}GB Free"
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" -d "chat_id=$TELEGRAM_TO" -d "text=$MSG"
+          powershell.exe "Start-Sleep -Seconds 20000"
+          [ $? -ne 0 ] && curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" -d "chat_id=$TELEGRAM_TO" -d "text=CRITICAL ALERT | ALPHA FAILED"
+
+  # --- BRAVO MACHINE ---
+  Bravo_Node:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Tailscale
+        shell: powershell
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          Invoke-WebRequest -Uri https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile ts.exe
+          Start-Process -FilePath .\ts.exe -ArgumentList "/quiet", "/norestart" -Wait
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey "$env:TS_AUTHKEY" --hostname "RDP-Bravo-${{ github.event.inputs.session_count }}" --force-reauth
+
+      - name: System Health & RDP Config
+        shell: powershell
+        run: |
+          $disk = Get-PSDrive C | Select-Object Used, Free
+          $freeGB = [math]::Round($disk.Free / 1GB, 2)
+          echo "FREE_SPACE=$freeGB" >> $env:GITHUB_ENV
+          $Password = ConvertTo-SecureString "GithubRDP123!" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $Password
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          for ($i=1; $i -le 10; $i++) {
+              $ip = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4)
+              if ($ip) { echo "FINAL_IP=$ip" >> $env:GITHUB_ENV; break }
+              Start-Sleep -Seconds 5
+          }
+
+      - name: Notify Bravo
+        shell: bash
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
+          COUNT: ${{ github.event.inputs.session_count }}
+        run: |
+          IP="${{ env.FINAL_IP }}"
+          DISK="${{ env.FREE_SPACE }}"
+          MSG="RDP ONLINE | REPO: RDP | JOB: BRAVO | S#: $COUNT | IP: $IP | Disk: ${DISK}GB Free"
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" -d "chat_id=$TELEGRAM_TO" -d "text=$MSG"
+          powershell.exe "Start-Sleep -Seconds 20000"
+          [ $? -ne 0 ] && curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" -d "chat_id=$TELEGRAM_TO" -d "text=CRITICAL ALERT | BRAVO FAILED"
+
+  # --- LOOP TRIGGER & CLEANUP ---
+  Trigger:
+    needs: [Alpha_Node, Bravo_Node]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Cleanup & Loop Logic
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Robust cleanup: finds and deletes all completed runs for this specific workflow
+          gh run list --workflow RDP-247 --status completed --limit 100 --json databaseId -q '.[].databaseId' | xargs -I{} gh run delete {} || true
+          
+          # Continue the loop
+          NEXT=$(( ${{ github.event.inputs.session_count }} + 1 ))
+          [ ! -f "STOP" ] && gh workflow run RDP-247 -f session_count=$NEXT
