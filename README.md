@@ -1,62 +1,40 @@
-# 🚀 24/7 Turbo RDP Master (GitHub Actions)
+# 🚀 RDP-247 Master Control
 
-This repository provides a high-performance Windows RDP environment that runs 24/7 using GitHub Actions. It includes automated session tracking, performance optimizations, and Telegram notifications.
+This repository runs two parallel Windows RDP sessions (Alpha & Bravo) 24/7 using GitHub Actions and Tailscale.
 
-## ✨ Features
-- **24/7 Infinite Loop:** Automatically triggers a new session every 6 hours.
-- **Turbo Speed:** Registry tweaks to disable animations and transparency for lower latency.
-- **Auto-Cleanup:** Automatically deletes old workflow logs and offline Tailscale devices.
-- **Session Tracking:** Tracks your "uptime streak" with session numbers (Session #1, #2, etc.).
-- **Telegram Integration:** Sends you the IP address, Hostname, and Session status every 6 hours.
-- **Manual Kill Switch:** Stop the loop anytime by creating a simple file.
+## 📊 Connection Details
+- **User:** `runneradmin`
+- **Password:** `GithubRDP123!`
+- **Session Duration:** 6 Hours (Auto-cycles)
+- **Nodes:** 2 Parallel Instances (Alpha & Bravo)
 
----
+## 🛠️ How to Control the Loop
 
-## 🛠️ Setup Instructions
+### 🛑 Stop the System
+To stop the 24/7 loop, create a file in this repository named exactly:
+- `STOP` — Kills the entire dual-node loop.
+- `STOP_ALPHA` — Stops only the Alpha node.
+- `STOP_BRAVO` — Stops only the Bravo node.
 
-### 1. Tailscale Configuration
-1. Create a **Reusable** and **Ephemeral** Auth Key at [Tailscale Keys](https://login.tailscale.com/admin/settings/keys).
-2. Generate an **API Key** in the same settings page (needed for auto-cleanup).
-3. Note your **Tailnet Name** (top-left of the Tailscale dashboard).
+### 🔄 Restart the System
+1. Delete any `STOP` files you created.
+2. Go to the **Actions** tab.
+3. Select the **RDP-247** workflow.
+4. Click **Run workflow**.
 
-### 2. GitHub Secrets
-Go to **Settings > Secrets and variables > Actions** and add the following:
+## 🛡️ Required Secrets
+Ensure these are set in **Settings > Secrets and variables > Actions**:
 
-| Secret Name | Description |
+| Secret | Description |
 | :--- | :--- |
-| `TS_AUTHKEY` | Your Tailscale Auth Key (`tskey-auth-...`) |
-| `TS_API_KEY` | Your Tailscale API Key (`tskey-api-...`) |
-| `TS_TAILNET` | Your Tailnet name (e.g., `yourname.github`) |
-| `TELEGRAM_TOKEN` | Your Bot Token from @BotFather |
-| `TELEGRAM_TO` | Your Telegram Chat ID |
+| `TS_AUTHKEY` | Tailscale Auth Key (**Must be set to REUSABLE**) |
+| `TELEGRAM_TOKEN` | Your Telegram Bot Token |
+| `TELEGRAM_TO` | Your Telegram User/Chat ID |
 
-### 3. Permissions
-Go to **Settings > Actions > General**:
-- Set **Workflow permissions** to **Read and write permissions**.
-- Check **Allow GitHub Actions to create and approve pull requests**.
+## ⚠️ Troubleshooting
+- **?? in Telegram:** This version uses plain-text headers to prevent character encoding errors.
+- **Only 1 Machine visible:** Check your Tailscale Auth Key. It **must** be "Reusable" to allow two machines to log in at the same time.
+- **Critical Alert:** If you receive a "CRITICAL ALERT" on Telegram, a node has crashed or GitHub has reclaimed the runner early. The system will attempt to restart automatically at the next cycle.
 
 ---
-
-## 🕹️ How to Use
-
-### Start the RDP
-Go to the **Actions** tab, select `24x7_Turbo_RDP_Master_V7`, and click **Run workflow**.
-
-### Connecting
-1. Wait for the Telegram notification.
-2. Connect via your RDP client using:
-   - **PC Name:** `cloud-pc-[SessionNumber]`
-   - **User:** `runneradmin`
-   - **Pass:** `GithubRDP123!`
-
-### Stop the Loop
-To stop the 24/7 cycle manually:
-1. Create a file named `STOP` in the main folder of this repository.
-2. The current session will finish, send a "Terminated" alert to Telegram, and stop.
-3. To restart, delete the `STOP` file and run the action again.
-
----
-
-## ⚠️ Important Notes
-- **Storage:** All files on the `C:` drive are wiped every 6 hours. Use cloud storage for important data.
-- **Public Repo:** This repo is Public, meaning the code is visible, but your **Secrets** are always safe and hidden.
+*Created with Gemini - Optimized for 24/7 Uptime.*
