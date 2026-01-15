@@ -37,4 +37,4 @@ Ensure these are set in **Settings > Secrets and variables > Actions**:
 - **Critical Alert:** If you receive a "CRITICAL ALERT" on Telegram, a node has crashed or GitHub has reclaimed the runner early. The system will attempt to restart automatically at the next cycle.
 
 ---
-*Created with Gemini - Optimized for 24/7 Uptime.*
+~Praveer Mandal
