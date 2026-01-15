@@ -1,4 +1,4 @@
-name: 24x7_Turbo_RDP_Master_V8
+name: 24x7_Turbo_RDP_Master_V9
 
 on:
   workflow_dispatch:
@@ -20,19 +20,18 @@ jobs:
       - name: Cleanup History
         shell: bash
         run: |
-          gh run deletion-log --workflow 24x7_Turbo_RDP_Master_V8 || true
-          gh run list --workflow 24x7_Turbo_RDP_Master_V8 --status completed --limit 50 | cut -f7 | xargs -I{} gh run delete {} || true
+          gh run list --workflow 24x7_Turbo_RDP_Master_V9 --status completed --limit 50 | cut -f7 | xargs -I{} gh run delete {} || true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Tailscale & Cleanup
+      - name: Setup Tailscale & Dashboard Cleanup
         shell: powershell
         run: |
           $count = "${{ github.event.inputs.session_count }}"
           if (-not $count) { $count = "1" }
           $prevCount = [int]$count - 1
           
-          # Delete previous session machine
+          # Cleanup previous session from Dashboard
           if ($prevCount -gt 0) {
               $authHeader = @{ Authorization = "Basic $( [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${{ secrets.TS_API_KEY }}:")) )" }
               $url = "https://api.tailscale.com/api/v2/tailnet/${{ secrets.TS_TAILNET }}/devices"
@@ -44,33 +43,35 @@ jobs:
           # Install Tailscale
           Invoke-WebRequest -Uri https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile tailscale-setup.exe
           Start-Process -FilePath .\tailscale-setup.exe -ArgumentList "/quiet", "/norestart" -Wait
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey ${{ secrets.TS_AUTHKEY }} --hostname "cloud-pc-$count" --force-reauth
+          
+          # Start Tailscale
+          $TS_PATH = "C:\Program Files\Tailscale\tailscale.exe"
+          & $TS_PATH up --authkey ${{ secrets.TS_AUTHKEY }} --hostname "cloud-pc-$count" --force-reauth
 
-      - name: Windows Speed Optimization
+      - name: Get IP (JSON Method) & Configure RDP
         shell: powershell
         run: |
-          Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "VisualFXSetting" -Value 2
-          powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-
-      - name: Configure RDP & Wait for Network
-        shell: powershell
-        run: |
+          # 1. Setup User
           $Password = ConvertTo-SecureString "GithubRDP123!" -AsPlainText -Force
           Set-LocalUser -Name "runneradmin" -Password $Password
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          # 2. Extract IP via JSON (The most reliable way)
+          Write-Host "Searching for Tailscale IP..."
+          $TS_PATH = "C:\Program Files\Tailscale\tailscale.exe"
+          $FoundIP = ""
           
-          # CRITICAL FIX: Wait for Tailscale to obtain IP
-          Write-Host "Waiting for Tailscale IP..."
-          for ($i=1; $i -le 10; $i++) {
-              $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-              if ($tsIP) { 
-                  Write-Host "IP Found: $tsIP"
-                  echo "FINAL_IP=$tsIP" >> $env:GITHUB_ENV
+          for ($i=1; $i -le 12; $i++) {
+              $status = & $TS_PATH status --json | ConvertFrom-Json
+              $FoundIP = $status.Self.TailscaleIPs[0]
+              
+              if ($FoundIP) { 
+                  Write-Host "✅ SUCCESS: Found IP $FoundIP"
+                  echo "FINAL_IP=$FoundIP" >> $env:GITHUB_ENV
                   break 
               }
-              Write-Host "Still waiting... ($i/10)"
+              Write-Host "Retrying IP search... ($i/12)"
               Start-Sleep -Seconds 5
           }
 
@@ -79,26 +80,26 @@ jobs:
         run: |
           $count = "${{ github.event.inputs.session_count }}"
           $ip = "${{ env.FINAL_IP }}"
-          if (-not $ip) { $ip = "N/A (Check Tailscale Dash)" }
+          if (-not $ip) { $ip = "IP_NOT_FOUND" }
           
-          $msg = "🚀 *RDP ONLINE (Session #$count)*`n`n*Hostname:* `cloud-pc-$count` `n*IP:* `$ip` `n`nHistory & Dashboard Cleaned! ✨"
+          $msg = "🚀 *RDP ONLINE (Session #$count)*`n`n*Hostname:* `cloud-pc-$count` `n*IP:* ``$ip`` `n*User:* `runneradmin` `n*Pass:* `GithubRDP123!`"
           $payload = @{ chat_id = "${{ secrets.TELEGRAM_TO }}"; text = $msg; parse_mode = "Markdown" } | ConvertTo-Json
           Invoke-RestMethod -Uri "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" -Method Post -ContentType "application/json" -Body ([System.Text.Encoding]::UTF8.GetBytes($payload))
 
-      - name: Keep-Alive Loop
+      - name: Keep-Alive
         shell: powershell
         run: Start-Sleep -Seconds 20000
 
-      - name: CHECK KILL SWITCH & TRIGGER NEXT
+      - name: TRIGGER NEXT CYCLE
         if: always()
         shell: bash
         run: |
           if [ -f "STOP" ]; then
-            MSG="🛑 *LOOP TERMINATED*`n`nStreak ended at Session #${{ github.event.inputs.session_count }}."
-            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" -d "chat_id=${{ secrets.TELEGRAM_TO }}&text=$MSG&parse_mode=Markdown"
+            MSG="🛑 *LOOP TERMINATED*"
+            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" -d "chat_id=${{ secrets.TELEGRAM_TO }}&text=$MSG"
           else
             NEW_COUNT=$(( ${{ github.event.inputs.session_count }} + 1 ))
-            gh workflow run 24x7_Turbo_RDP_Master_V8 -f session_count=$NEW_COUNT
+            gh workflow run 24x7_Turbo_RDP_Master_V9 -f session_count=$NEW_COUNT
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
